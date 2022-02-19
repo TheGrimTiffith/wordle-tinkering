@@ -1,6 +1,5 @@
 package com.fafflegriff.wordle.graph
 
-import com.fafflegriff.wordle.KnownWordScorer
 import com.fafflegriff.wordle.Result
 import com.fafflegriff.wordle.ScoringLogic
 
@@ -11,7 +10,7 @@ import com.fafflegriff.wordle.ScoringLogic
 class DecisionTree(dictionary: List<String>) {
     private val dictionaryStrings: List<String>
     private val dictionary: Array<CharArray>
-    private val root: ChoiceNode
+    private val root: DecisionNode
 
     init {
         // translate dictionary to a CharArray
@@ -67,7 +66,7 @@ class DecisionTree(dictionary: List<String>) {
         // valid and all words are available
         // TODO - provide separate valid guess words from the subset of answer words
         val allDictionary = dictionary.indices.map { it }
-        root = buildChoice(allDictionary, allDictionary, wordSimilarityClusters as Array<Map<Int, List<Int>>> )
+        root = buildChoice(allDictionary, allDictionary, wordSimilarityClusters as Array<Map<Int, List<Int>>>, 0)
         println("full transition graph completed...")
     }
 
@@ -76,11 +75,12 @@ class DecisionTree(dictionary: List<String>) {
      */
     fun newGame() : Game = Game()
 
-    private fun buildChoice(availableChoices: List<Int>, remainingPossibilities: List<Int>, similarityClusters: Array<Map<Int, List<Int>>>) : ChoiceNode {
-        // found a singleton answer - return it.
-        if (remainingPossibilities.size == 1) {
-            return ChoiceNode(listOf(DecisionNode(availableChoices[0], emptyMap())))
+    private fun buildChoice(availableChoices: List<Int>, remainingPossibilities: List<Int>, similarityClusters: Array<Map<Int, List<Int>>>, depth: Int) : DecisionNode {
+        // base conditions hit either we found a singleton answer OR we hit a depth below the max depth
+        if (remainingPossibilities.size == 1 || depth > 6) {
+            return DecisionNode(availableChoices[0], emptyMap(), depth)
         }
+
         val choices = mutableListOf<DecisionNode>()
         for (choice in availableChoices) {
             // TODO - how to think about intersection between [remaining hidden word possibilities] and the filtered
@@ -101,17 +101,17 @@ class DecisionTree(dictionary: List<String>) {
 
             // providing there is at least one valid transition
             if (filteredTransitions.isNotEmpty()) {
-                choices.add(buildDecisionNode(choice, filteredTransitions, similarityClusters))
+                choices.add(buildDecisionNode(choice, filteredTransitions, similarityClusters, depth + 1))
             }
         }
 
-        // build the choice node for each possible decision
-        return ChoiceNode(choices)
+        // return the optimal decision based on the available choices
+        return choices.sortedBy { it.allGuesses  }[0]
     }
 
-    private fun buildDecisionNode(wordId: Int, transitions: Map<Int, List<Int>>, transitionClusters: Array<Map<Int, List<Int>>>) : DecisionNode {
-        val transitionsToChoices = transitions.map { Pair(it.key, buildChoice(it.value, it.value, transitionClusters)) }.toMap()
-        return DecisionNode(wordId, transitionsToChoices)
+    private fun buildDecisionNode(wordId: Int, transitions: Map<Int, List<Int>>, transitionClusters: Array<Map<Int, List<Int>>>, depth: Int) : DecisionNode {
+        val transitionsToChoices = transitions.map { Pair(it.key, buildChoice(it.value, it.value, transitionClusters, depth)) }.toMap()
+        return DecisionNode(wordId, transitionsToChoices, depth)
     }
 
     private fun intersectSortedLists(left: List<Int>, right: List<Int>) : List<Int> {
@@ -135,39 +135,12 @@ class DecisionTree(dictionary: List<String>) {
         return intersection
     }
 
-    private class ChoiceNode(choices : List<DecisionNode>) {
-        val maxDepth: Int
-        val allGuesses: Int
-        val orderedChoices : List<DecisionNode>
-
-        init {
-            var tempMaxDepth = 0
-            var tempAllGuesses = 0
-            for (choice in choices) {
-                if (choice.maxDepth > tempMaxDepth) {
-                    tempMaxDepth = choice.maxDepth
-                }
-                tempAllGuesses += choice.allGuesses
-            }
-            maxDepth = tempMaxDepth
-            allGuesses = tempAllGuesses
-            // TODO - fix constructor to take an alternate comparator (i.e. depth first, then within all guesses)
-            orderedChoices = choices.sortedBy { it.allGuesses  }
-        }
-
-        fun print(indent: String, dictionary: List<String>) {
-            for (choice in orderedChoices) {
-                choice.print(indent, dictionary)
-            }
-        }
-    }
-
-    private class DecisionNode(val guessWordId: Int, val resultTransitions: Map<Int, ChoiceNode>) {
+    private class DecisionNode(val guessWordId: Int, val resultTransitions: Map<Int, DecisionNode>, depth: Int) {
         val maxDepth: Int
         val allGuesses: Int
 
         init {
-            var tempMaxDepth = 0
+            var tempMaxDepth = depth
             var tempAllGuesses = 0
             for (transition in resultTransitions.values) {
                 // transitions will often be sparse, as we're trading memory for direct decision addressibility (at the moment)
@@ -181,7 +154,7 @@ class DecisionTree(dictionary: List<String>) {
             allGuesses = tempAllGuesses + 1 // has to include the guess cost of it's assigned guess word
         }
 
-        fun transition(scoring: List<Result>): ChoiceNode {
+        fun transition(scoring: List<Result>): DecisionNode {
             val encodedTransition = Similarity.encodeResult(scoring.toTypedArray())
             return resultTransitions[encodedTransition]
                 ?: throw IllegalStateException("Expected a valid choice for $scoring from $guessWordId but found none")
@@ -202,24 +175,20 @@ class DecisionTree(dictionary: List<String>) {
     }
 
     inner class Game {
-        private var choiceNode: ChoiceNode = root
-        private var decisionNode: DecisionNode? = null
+        private var decisionNode: DecisionNode = root
 
         fun makeChoice() : CharArray {
-            // choose first result from the ranked (ascending) choices
-            val decision = choiceNode.orderedChoices[0]
-            decisionNode = decision
             // set as new root for the graph, ready for the result to transition
-            return dictionary[decision.guessWordId]
+            return dictionary[decisionNode.guessWordId]
         }
 
         fun transitionOnResult(scoring: List<Result>) {
-            choiceNode = decisionNode?.transition(scoring) ?: throw IllegalStateException("cannot transition without decisionNode first being set, " +
+            decisionNode = decisionNode?.transition(scoring) ?: throw IllegalStateException("cannot transition without decisionNode first being set, " +
                     "ensure to call #makeChoice() prior to attempting to transitionOnResult")
         }
 
         fun print() {
-            choiceNode.print("", dictionaryStrings)
+            decisionNode.print("", dictionaryStrings)
         }
     }
 }
