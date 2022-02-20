@@ -2,12 +2,13 @@ package com.fafflegriff.wordle.graph
 
 import com.fafflegriff.wordle.Result
 import com.fafflegriff.wordle.ScoringLogic
+import kotlin.math.log2
 
 /**
  * The Decision tree provides recommendations of word guesses, given what has already been provided, based on the
  * average or percentile of guesses that will be required to get to the answer, given what is known.
  */
-class DecisionTree(dictionary: List<String>) {
+class DecisionTree(dictionary: List<String>, var maxCandidatesToConsider: Int) {
     private val dictionaryStrings: List<String>
     private val dictionary: Array<CharArray>
     private val root: DecisionNode
@@ -16,7 +17,6 @@ class DecisionTree(dictionary: List<String>) {
         // translate dictionary to a CharArray
         this.dictionaryStrings = dictionary
         this.dictionary = dictionary.map { it.toCharArray() }.toTypedArray()
-        println("Dictionary mapped...")
 
         val selfSimilarity = Similarity.encodeResult(arrayOf(Result.CORRECT, Result.CORRECT, Result.CORRECT, Result.CORRECT, Result.CORRECT))
 
@@ -35,7 +35,6 @@ class DecisionTree(dictionary: List<String>) {
                 }
             }
         }
-        println("Similarity Matrix built...")
 
         // from the similiarity matrix, we can now roll up based on similarity equality (ordinal) in order to produce
         // clusters in the form <from-word> [index] <similarity> [ordinal] sorted list [to-words]
@@ -60,14 +59,11 @@ class DecisionTree(dictionary: List<String>) {
             }
         }
 
-        println("transitions clusters built...")
-
         // now stitch the clusters into a *transition* graph - we start from the root position where *all* values are
         // valid and all words are available
         // TODO - provide separate valid guess words from the subset of answer words
         val allDictionary = dictionary.indices.map { it }
-        root = buildChoice(allDictionary, allDictionary, wordSimilarityClusters as Array<Map<Int, List<Int>>>, 0)
-        println("full transition graph completed...")
+        root = buildChoice(allDictionary, allDictionary, wordSimilarityClusters as Array<Map<Int, List<Int>>>, 1)
     }
 
     /**
@@ -75,13 +71,42 @@ class DecisionTree(dictionary: List<String>) {
      */
     fun newGame() : Game = Game()
 
+    private data class Candidate(val choice: Int, val transitions: Map<Int, List<Int>>) : Comparable<Candidate> {
+        val averageInformation: Double
+
+        init {
+            var sum = 0
+
+            // capture the sum and the max across each scoring transition for the candidate.
+            for (transition in transitions.values) {
+                sum += transition.size
+            }
+
+            val doubleSum = sum.toDouble()
+            var averageInformation = 0.0
+            // now calculate the average information
+            for (transition in transitions.values) {
+                val probability: Double = transition.size.toDouble() / doubleSum
+                val information = log2(1/probability)
+                averageInformation += probability * information
+            }
+            this.averageInformation = averageInformation
+        }
+
+        override fun compareTo(other: Candidate): Int = when {
+            averageInformation > other.averageInformation -> 1
+            averageInformation < other.averageInformation -> -1
+            else -> 0
+        }
+    }
+
     private fun buildChoice(availableChoices: List<Int>, remainingPossibilities: List<Int>, similarityClusters: Array<Map<Int, List<Int>>>, depth: Int) : DecisionNode {
         // base conditions hit either we found a singleton answer OR we hit a depth below the max depth
-        if (remainingPossibilities.size == 1 || depth > 6) {
+        if (remainingPossibilities.size == 1) {
             return DecisionNode(availableChoices[0], emptyMap(), depth)
         }
 
-        val choices = mutableListOf<DecisionNode>()
+        val candidates = mutableListOf<Candidate>()
         for (choice in availableChoices) {
             // TODO - how to think about intersection between [remaining hidden word possibilities] and the filtered
             //  edge outcomes
@@ -97,20 +122,27 @@ class DecisionTree(dictionary: List<String>) {
                 if (validPossibilities.isEmpty() || validPossibilities.size == remainingPossibilities.size) null else Pair(it.key, validPossibilities)
             }.toMap()
 
-            // TODO - handle terminal case (word is met)
-
             // providing there is at least one valid transition
             if (filteredTransitions.isNotEmpty()) {
-                choices.add(buildDecisionNode(choice, filteredTransitions, similarityClusters, depth + 1))
+                candidates.add(Candidate(choice, filteredTransitions))
             }
         }
+        // order choices and filter to best N candidates
+        val filteredCandidates = if (candidates.size > maxCandidatesToConsider) {
+            candidates.sortDescending()
+            candidates.take(maxCandidatesToConsider)
+        } else candidates
+
+        // now recurse and build the deep inspection for each of the candidates
+        val choices = filteredCandidates.map { buildDecisionNode(it.choice, it.transitions, similarityClusters, depth) }
 
         // return the optimal decision based on the available choices
-        return choices.sortedBy { it.allGuesses  }[0]
+        return choices.sortedBy { it.allGuesses }[0]
     }
 
     private fun buildDecisionNode(wordId: Int, transitions: Map<Int, List<Int>>, transitionClusters: Array<Map<Int, List<Int>>>, depth: Int) : DecisionNode {
-        val transitionsToChoices = transitions.map { Pair(it.key, buildChoice(it.value, it.value, transitionClusters, depth)) }.toMap()
+        val transitionDepth = depth + 1
+        val transitionsToChoices = transitions.map { Pair(it.key, buildChoice(it.value, it.value, transitionClusters, transitionDepth)) }.toMap()
         return DecisionNode(wordId, transitionsToChoices, depth)
     }
 
@@ -138,10 +170,12 @@ class DecisionTree(dictionary: List<String>) {
     private class DecisionNode(val guessWordId: Int, val resultTransitions: Map<Int, DecisionNode>, depth: Int) {
         val maxDepth: Int
         val allGuesses: Int
+        val nodeCount: Int
 
         init {
-            var tempMaxDepth = depth
+            var tempMaxDepth = 0
             var tempAllGuesses = 0
+            var tempNodeCount = 0
             for (transition in resultTransitions.values) {
                 // transitions will often be sparse, as we're trading memory for direct decision addressibility (at the moment)
                 // if this proves too memory intensive, we'll drop to a LinkedHash
@@ -149,9 +183,11 @@ class DecisionTree(dictionary: List<String>) {
                     tempMaxDepth = transition.maxDepth
                 }
                 tempAllGuesses += transition.allGuesses
+                tempNodeCount += transition.nodeCount
             }
-            maxDepth = tempMaxDepth + 1     // must include self depth
-            allGuesses = tempAllGuesses + 1 // has to include the guess cost of it's assigned guess word
+            maxDepth = tempMaxDepth + 1         // must include self depth
+            nodeCount = tempNodeCount + 1       // likewise must include self depth
+            allGuesses = tempAllGuesses + depth // has to include the guess cost of it's assigned guess word
         }
 
         fun transition(scoring: List<Result>): DecisionNode {
@@ -183,12 +219,19 @@ class DecisionTree(dictionary: List<String>) {
         }
 
         fun transitionOnResult(scoring: List<Result>) {
-            decisionNode = decisionNode?.transition(scoring) ?: throw IllegalStateException("cannot transition without decisionNode first being set, " +
-                    "ensure to call #makeChoice() prior to attempting to transitionOnResult")
+            decisionNode = decisionNode.transition(scoring)
         }
 
         fun print() {
             decisionNode.print("", dictionaryStrings)
+        }
+
+        fun totalGuessesFromThisPoint() : Int {
+            return decisionNode.allGuesses
+        }
+
+        fun averageGuessesFromThisPoint() : Double {
+            return decisionNode.allGuesses.toDouble() / decisionNode.nodeCount.toDouble()
         }
     }
 }
