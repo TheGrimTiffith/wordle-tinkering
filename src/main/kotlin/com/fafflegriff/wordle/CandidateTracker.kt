@@ -1,6 +1,6 @@
 package com.fafflegriff.wordle
 
-class CandidateTracker (words: List<String> = WordleDictionary.getDictionary()) {
+class CandidateTracker (words: List<String> = WordleDictionary.getAnswersDictionary()) {
 
     var candidates = words.map { it.toCharArray() }
     private val knownWrong: Array<Int> = Array(5) { 0 }

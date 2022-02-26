@@ -47,14 +47,14 @@ fun main() {
     var gamesWon = 0
     val winDistribution = Array(6) { 0 }
     var keepPlaying = true
-    // val newGameDecider: NewGameDecider = ManualInputNewGameDecider()
-    val newGameDecider = FixedCountNewGameDecider(1000000)
+    val newGameDecider: NewGameDecider = ManualInputNewGameDecider()
+    // val newGameDecider = FixedCountNewGameDecider(1000000)
     do {
-        val word = WordleDictionary.getDictionary().random()
-        val scorer = KnownWordScorer(word)
-        //val scorer = ManualScorer()
-        // val player = AssistedHumanPlayer(CommandLineHumanPlayer(), TextDisplay())
-        val player = MachinePlayer()
+        val word = WordleDictionary.getAnswersDictionary().random()
+        //val scorer = KnownWordScorer(word)
+        val scorer = ManualScorer()
+        val player = AssistedHumanPlayer(CommandLineHumanPlayer(), TextDisplay())
+        //val player = MachinePlayer()
         val game = Wordle(player, scorer, player)
         val result = game.play()
         gamesPlayed++

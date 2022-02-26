@@ -17,6 +17,9 @@ dependencies {
 
 tasks.test {
     useJUnit()
+
+    minHeapSize = "5120m"
+    maxHeapSize = "5120m"
 }
 
 tasks.withType<KotlinCompile>() {

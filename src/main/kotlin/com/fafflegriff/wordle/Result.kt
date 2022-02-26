@@ -1,14 +1,14 @@
 package com.fafflegriff.wordle
 
-enum class Result(val value: Int, val character: Char) {
-    CORRECT(2, 'G'), IN_WRONG_PLACE(1, 'Y'), NOT_IN_WORD(0, '-');
+enum class Result(val value: UByte, val character: Char) {
+    CORRECT(2u, 'G'), IN_WRONG_PLACE(1u, 'Y'), NOT_IN_WORD(0u, '-');
 
     companion object {
-        fun forValue(value: Int) : Result =
+        fun forValue(value: UByte) : Result =
             when (value) {
-                0 -> NOT_IN_WORD
-                1 -> IN_WRONG_PLACE
-                2 -> CORRECT
+                0u.toUByte() -> NOT_IN_WORD
+                1u.toUByte() -> IN_WRONG_PLACE
+                2u.toUByte() -> CORRECT
                 else -> throw IllegalStateException("only values 0..2 are valid, not $value")
             }
 
