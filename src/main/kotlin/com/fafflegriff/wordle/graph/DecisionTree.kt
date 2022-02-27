@@ -1,6 +1,7 @@
 package com.fafflegriff.wordle.graph
 
 import com.fafflegriff.wordle.Result
+import java.util.BitSet
 import kotlin.math.log2
 
 /**
@@ -15,7 +16,8 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
         // stitch the clusters into a *transition* graph - we start from the root position where *all* values are
         // valid and all words are available
         val allDictionary = comparisonMatrix.dictionary.indices.map { it.toShort() }
-        val remainingPossibilities = (0 until comparisonMatrix.firstNonAnswerOrdinal).map { it.toShort() }
+        val remainingPossibilities = BitSet(comparisonMatrix.firstNonAnswerOrdinal)
+        remainingPossibilities.set(0, comparisonMatrix.firstNonAnswerOrdinal )
         root = buildChoice(allDictionary, remainingPossibilities, 1)
     }
 
@@ -24,7 +26,7 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
      */
     fun newGame() : Game = Game()
 
-    private data class Candidate(val choice: Short, val transitions: Map<UByte, List<Short>>) : Comparable<Candidate> {
+    private data class Candidate(val choice: Short, val transitions: Map<UByte, BitSet>) : Comparable<Candidate> {
         val averageInformation: Double
 
         init {
@@ -32,14 +34,14 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
 
             // capture the sum and the max across each scoring transition for the candidate.
             for (transition in transitions.values) {
-                sum += transition.size
+                sum += transition.cardinality()
             }
 
             val doubleSum = sum.toDouble()
             var averageInformation = 0.0
             // now calculate the average information
             for (transition in transitions.values) {
-                val probability: Double = transition.size.toDouble() / doubleSum
+                val probability: Double = transition.cardinality().toDouble() / doubleSum
                 val information = log2(1/probability)
                 averageInformation += probability * information
             }
@@ -53,10 +55,13 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
         }
     }
 
-    private fun buildChoice(availableChoices: List<Short>, remainingPossibilities: List<Short>, depth: Int) : DecisionNode {
+    private fun buildChoice(availableChoices: List<Short>, remainingPossibilities: BitSet, depth: Int) : DecisionNode {
         // base condition hit - we have a single, terminal choice
-        if (remainingPossibilities.size == 1) {
-            return DecisionNode(remainingPossibilities[0], emptyMap(), depth)
+        val firstIdx = remainingPossibilities.nextSetBit(0)
+        val secondIdx = remainingPossibilities.nextSetBit(firstIdx + 1)
+
+        if (firstIdx > -1 && secondIdx == -1) {
+            return DecisionNode(firstIdx.toShort(), emptyMap(), depth)
         }
 
         val candidates = mutableListOf<Candidate>()
@@ -65,15 +70,17 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
             val unfilteredTransitions = comparisonMatrix.wordSimilarityClusters[choice.toInt()]
             // filter each similarity cluster based on what is still *possible* [ intersection ]
             var reducedCount = 0
-            val filteredTransitions: Map<UByte, List<Short>> = unfilteredTransitions.mapNotNull {
-                val validPossibilities = intersectSortedLists(remainingPossibilities, it.value)
-                if (validPossibilities.size < it.value.size && validPossibilities.isNotEmpty()) {
+            val filteredTransitions: Map<UByte, BitSet> = unfilteredTransitions.mapNotNull {
+                val validPossibilities = remainingPossibilities.clone() as BitSet
+                validPossibilities.and(it.value)
+                val isEmpty = -1 == validPossibilities.nextSetBit(0)
+                if (validPossibilities.cardinality() < it.value.cardinality()) {
                     reducedCount++
                 }
                 // NOTE - we don't want to transition across a branch that eliminates all possibility of getting to a valid result (fully disjoint) not do a
                 // transition that provides no reduction in candidates (this handles both the self transition i.e. 'WORDS' -> 'WORDS' as well as no match anagrams
                 // such as 'SHEEP' and 'PEESH' where result words doesn't overlap, such as 'GUILT' (I'm sure there are better / real anagrams)
-                if (validPossibilities.isEmpty()) null else Pair(it.key, validPossibilities)
+                if (isEmpty) null else Pair(it.key, validPossibilities)
             }.toMap()
 
             // providing there is at least one valid transition and at least one reduction in candidate cardinality - keep the option
@@ -102,27 +109,6 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
 
         // return the optimal decision based on the available choices
         return choices.sortedBy { it.allGuesses }[0]
-    }
-
-    private fun intersectSortedLists(left: List<Short>, right: List<Short>) : List<Short> {
-        val intersection = ArrayList<Short>(if (left.size < right.size) left.size else right.size)
-        var leftIdx = 0
-        var rightIdx = 0
-        do {
-            val leftVal = left[leftIdx]
-            val rightVal = right[rightIdx]
-            when {
-                leftVal < rightVal -> leftIdx++
-                leftVal > rightVal -> rightIdx++
-                else -> {
-                    intersection.add(leftVal)
-                    leftIdx++
-                    rightIdx++
-                }
-            }
-        } while (leftIdx < left.size && rightIdx < right.size)
-
-        return intersection
     }
 
     private class DecisionNode(val guessWordId: Short, val resultTransitions: Map<UByte, DecisionNode>, depth: Int) {

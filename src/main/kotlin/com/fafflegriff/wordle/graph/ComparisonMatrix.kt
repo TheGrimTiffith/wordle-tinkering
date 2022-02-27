@@ -1,23 +1,24 @@
 package com.fafflegriff.wordle.graph
 
 import com.fafflegriff.wordle.ScoringLogic
+import java.util.BitSet
 
 class ComparisonMatrix(answersDictionary: List<String>, otherInputWordsDictionary: List<String>) {
     val dictionaryStrings: List<String>
     val dictionary: Array<CharArray>
-    val firstNonAnswerOrdinal: Short
-    val wordSimilarityClusters: Array<Map<UByte, List<Short>>>
+    val firstNonAnswerOrdinal: Int
+    val wordSimilarityClusters: Array<Map<UByte, BitSet>>
 
     init {
         // concatenate the additional valid guess words dictionary after the answers dictionary, we'll keep a marker to
         // determine whether we have any valid answers remaining in a discovery branch, if not - we can prune the branch
         this.dictionaryStrings = answersDictionary.plus(otherInputWordsDictionary)
         this.dictionary = dictionaryStrings.map { it.toCharArray() }.toTypedArray()
-        this.firstNonAnswerOrdinal = answersDictionary.size.toShort()
+        this.firstNonAnswerOrdinal = answersDictionary.size
 
         // from the similiarity matrix, we can now roll up based on similarity equality (ordinal) in order to produce
         // clusters in the form <from-word> [index] <similarity> [ordinal] sorted list [to-words]
-        val wordSimilarityClusters = Array(dictionary.size) { mutableMapOf<UByte, MutableList<Short>>() }
+        val wordSimilarityClusters = Array(dictionary.size) { mutableMapOf<UByte, BitSet>() }
 
         // build into the similarity cluster
         for (fromId in dictionary.indices) {
@@ -27,18 +28,11 @@ class ComparisonMatrix(answersDictionary: List<String>, otherInputWordsDictionar
             for (toId in 0 until firstNonAnswerOrdinal) {
                 if (fromId != toId) {
                     val similarity = Similarity.encodeResult(ScoringLogic.score(fromWord, dictionary[toId]))
-                    similarityClusters.computeIfAbsent(similarity) { mutableListOf() }.add(toId.toShort())
+                    similarityClusters.computeIfAbsent(similarity) { BitSet(answersDictionary.size) }.set(toId)
                 }
             }
         }
 
-        // now go through and sort the to-id clusters such that they can be merge-joined efficiently
-        for (word in wordSimilarityClusters) {
-            for (similarityCluster in word.entries) {
-                similarityCluster.value.sort()
-            }
-        }
-
-        this.wordSimilarityClusters = wordSimilarityClusters as Array<Map<UByte, List<Short>>>
+        this.wordSimilarityClusters = wordSimilarityClusters as Array<Map<UByte, BitSet>>
     }
 }
