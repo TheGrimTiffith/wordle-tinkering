@@ -18,7 +18,7 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
         val allDictionary = comparisonMatrix.dictionary.indices.map { it.toShort() }
         val remainingPossibilities = BitSet(comparisonMatrix.firstNonAnswerOrdinal)
         remainingPossibilities.set(0, comparisonMatrix.firstNonAnswerOrdinal )
-        root = buildChoice(allDictionary, remainingPossibilities, 1)
+        root = buildChoice(allDictionary, remainingPossibilities, 1, comparisonMatrix.firstNonAnswerOrdinal)
     }
 
     /**
@@ -26,22 +26,22 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
      */
     fun newGame() : Game = Game()
 
-    private data class Candidate(val choice: Short, val transitions: Map<UByte, BitSet>) : Comparable<Candidate> {
+    private data class Candidate(val choice: Short, val transitions: List<Transition>) : Comparable<Candidate> {
         val averageInformation: Double
 
         init {
             var sum = 0
 
             // capture the sum and the max across each scoring transition for the candidate.
-            for (transition in transitions.values) {
-                sum += transition.cardinality()
+            for (transition in transitions) {
+                sum += transition.candidateCount
             }
 
             val doubleSum = sum.toDouble()
             var averageInformation = 0.0
             // now calculate the average information
-            for (transition in transitions.values) {
-                val probability: Double = transition.cardinality().toDouble() / doubleSum
+            for (transition in transitions) {
+                val probability: Double = transition.candidateCount.toDouble() / doubleSum
                 val information = log2(1/probability)
                 averageInformation += probability * information
             }
@@ -55,13 +55,9 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
         }
     }
 
-    private fun buildChoice(availableChoices: List<Short>, remainingPossibilities: BitSet, depth: Int) : DecisionNode {
-        // base condition hit - we have a single, terminal choice
-        val firstIdx = remainingPossibilities.nextSetBit(0)
-        val secondIdx = remainingPossibilities.nextSetBit(firstIdx + 1)
-
-        if (firstIdx > -1 && secondIdx == -1) {
-            return DecisionNode(firstIdx.toShort(), emptyMap(), depth)
+    private fun buildChoice(availableChoices: List<Short>, remainingPossibilities: BitSet, depth: Int, candidateCount: Int) : DecisionNode {
+        if (candidateCount == 1) {
+            return DecisionNode(remainingPossibilities.nextSetBit(0).toShort(), emptyMap(), 1, depth, 1)
         }
 
         val candidates = mutableListOf<Candidate>()
@@ -70,18 +66,18 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
             val unfilteredTransitions = comparisonMatrix.wordSimilarityClusters[choice.toInt()]
             // filter each similarity cluster based on what is still *possible* [ intersection ]
             var reducedCount = 0
-            val filteredTransitions: Map<UByte, BitSet> = unfilteredTransitions.mapNotNull {
+            val filteredTransitions: List<Transition> = unfilteredTransitions.mapNotNull {
                 val validPossibilities = remainingPossibilities.clone() as BitSet
-                validPossibilities.and(it.value)
-                val isEmpty = -1 == validPossibilities.nextSetBit(0)
-                if (validPossibilities.cardinality() < it.value.cardinality()) {
+                validPossibilities.and(it.remainingCandidates)
+                val count = validPossibilities.cardinality()
+                if (count < it.candidateCount) {
                     reducedCount++
                 }
                 // NOTE - we don't want to transition across a branch that eliminates all possibility of getting to a valid result (fully disjoint) not do a
                 // transition that provides no reduction in candidates (this handles both the self transition i.e. 'WORDS' -> 'WORDS' as well as no match anagrams
                 // such as 'SHEEP' and 'PEESH' where result words doesn't overlap, such as 'GUILT' (I'm sure there are better / real anagrams)
-                if (isEmpty) null else Pair(it.key, validPossibilities)
-            }.toMap()
+                if (count > 0) Transition(it.encodedTransition, validPossibilities, count) else null
+            }
 
             // providing there is at least one valid transition and at least one reduction in candidate cardinality - keep the option
             if (filteredTransitions.isNotEmpty() && (reducedCount > 0 || depth == 1)) {
@@ -102,16 +98,19 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
         val transitionDepth = depth + 1
         val choices = filteredCandidates.map {
             val transitionsToChoices = it.transitions.map {
-                    transition -> Pair(transition.key, buildChoice(choicesRemainingPostFilter, transition.value, transitionDepth))
-            }.toMap()
-            DecisionNode(it.choice, transitionsToChoices, depth)
+                    transition -> DecisionNodeTransition(transition.encodedTransition,
+                        buildChoice(choicesRemainingPostFilter, transition.remainingCandidates, transitionDepth, transition.candidateCount))
+            }
+            DecisionNodeCandidate(it.choice, transitionsToChoices, depth)
         }
 
         // return the optimal decision based on the available choices
-        return choices.sortedBy { it.allGuesses }[0]
+        return choices.sortedBy { it.allGuesses }[0].toDecisionNode()
     }
 
-    private class DecisionNode(val guessWordId: Short, val resultTransitions: Map<UByte, DecisionNode>, depth: Int) {
+    private data class DecisionNodeTransition(val encodedTransition: UByte, val decisionNode: DecisionNode)
+
+    private data class DecisionNodeCandidate(val guessWordId: Short, val transitions: List<DecisionNodeTransition>, val depth: Int) {
         val maxDepth: Int
         val allGuesses: Int
         val nodeCount: Int
@@ -120,19 +119,28 @@ class DecisionTree(private val comparisonMatrix: ComparisonMatrix, var maxCandid
             var tempMaxDepth = 0
             var tempAllGuesses = 0
             var tempNodeCount = 0
-            for (transition in resultTransitions.values) {
+            for (transition in transitions) {
+                val target = transition.decisionNode
                 // transitions will often be sparse, as we're trading memory for direct decision addressibility (at the moment)
                 // if this proves too memory intensive, we'll drop to a LinkedHash
-                if (transition.maxDepth > tempMaxDepth) {
-                    tempMaxDepth = transition.maxDepth
+                if (target.maxDepth > tempMaxDepth) {
+                    tempMaxDepth = target.maxDepth
                 }
-                tempAllGuesses += transition.allGuesses
-                tempNodeCount += transition.nodeCount
+                tempAllGuesses += target.allGuesses
+                tempNodeCount += target.nodeCount
             }
             maxDepth = tempMaxDepth + 1         // must include self depth
             nodeCount = tempNodeCount + 1       // likewise must include self depth
             allGuesses = tempAllGuesses + depth // has to include the guess cost of it's assigned guess word
         }
+
+        fun toDecisionNode() : DecisionNode {
+            return DecisionNode(guessWordId,
+                transitions.associate { Pair(it.encodedTransition, it.decisionNode) },maxDepth, allGuesses, nodeCount)
+        }
+    }
+
+    private class DecisionNode(val guessWordId: Short, val resultTransitions: Map<UByte, DecisionNode>, val maxDepth: Int, val allGuesses: Int, val nodeCount: Int) {
 
         fun transition(scoring: List<Result>): DecisionNode {
             val encodedTransition = Similarity.encodeResult(scoring.toTypedArray())

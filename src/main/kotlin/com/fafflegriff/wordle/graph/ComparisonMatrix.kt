@@ -7,7 +7,7 @@ class ComparisonMatrix(answersDictionary: List<String>, otherInputWordsDictionar
     val dictionaryStrings: List<String>
     val dictionary: Array<CharArray>
     val firstNonAnswerOrdinal: Int
-    val wordSimilarityClusters: Array<Map<UByte, BitSet>>
+    val wordSimilarityClusters: Array<Array<Transition>>
 
     init {
         // concatenate the additional valid guess words dictionary after the answers dictionary, we'll keep a marker to
@@ -18,21 +18,17 @@ class ComparisonMatrix(answersDictionary: List<String>, otherInputWordsDictionar
 
         // from the similiarity matrix, we can now roll up based on similarity equality (ordinal) in order to produce
         // clusters in the form <from-word> [index] <similarity> [ordinal] sorted list [to-words]
-        val wordSimilarityClusters = Array(dictionary.size) { mutableMapOf<UByte, BitSet>() }
-
-        // build into the similarity cluster
-        for (fromId in dictionary.indices) {
-            val fromWord = dictionary[fromId]
-            val similarityClusters = wordSimilarityClusters[fromId]
+        this.wordSimilarityClusters = Array(dictionary.size) {
+            val fromWord = dictionary[it]
+            val similarityClusters = mutableMapOf<UByte, BitSet>()
             // we only need to build similarities from *all* words to the *valid answers*
             for (toId in 0 until firstNonAnswerOrdinal) {
-                if (fromId != toId) {
+                if (it != toId) {
                     val similarity = Similarity.encodeResult(ScoringLogic.score(fromWord, dictionary[toId]))
                     similarityClusters.computeIfAbsent(similarity) { BitSet(answersDictionary.size) }.set(toId)
                 }
             }
+            similarityClusters.entries.map { entry -> Transition(entry.key, entry.value, entry.value.cardinality()) }.toTypedArray()
         }
-
-        this.wordSimilarityClusters = wordSimilarityClusters as Array<Map<UByte, BitSet>>
     }
 }
